@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "MTurk Tab Manager (Bangla Warning)",
+  "version": "1.5",
+  "description": "Auto-closes MTurk timer tabs and warns about duplicate tabs. Auto-opens earnings tab every 3 hours.",
+  "permissions": [
+    "tabs",
+    "alarms",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "https://worker.mturk.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://worker.mturk.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start" 
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "mac-startup_7xOaB3X.mp3"
+      ],
+      "matches": [
+        "https://worker.mturk.com/*"
+      ]
+    }
+  ],
+  "action": {
+    "default_title": "MTurk Tab Manager"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
