@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MTurk Tab Manager (Bangla Warning)",
-  "version": "1.6",
-  "description": "Auto-closes MTurk timer tabs, warns about duplicate tabs, auto-opens earnings every 3 hours, and auto-handles stray about:blank tabs.",
+  "version": "1.7",
+  "description": "Auto-closes MTurk timer tabs, warns about duplicates, recovers white/blank queue pages, auto-opens earnings every 3 hours, and handles stray about:blank tabs.",
   "permissions": [
     "tabs",
     "alarms",

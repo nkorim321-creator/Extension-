@@ -20,6 +20,8 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 3. **Tasks page auto-refresh** — the `/tasks` queue hard-reloads every 10 minutes to keep it fresh.
 
+   **White/blank queue recovery** — sometimes the `/tasks` page loads but renders as a blank white screen (the tab title is correct but the body is empty). The extension detects this ~6 seconds after load and instantly reloads a fresh queue link (`/tasks?_=<timestamp>`). It retries up to 4 times to avoid a reload loop, and resets once the queue renders normally.
+
 4. **Never closes the work tab** — `/tasks` and `/projects/...` (HIT pages) stay open and are never redirected.
 
 5. **Auto-open earnings every 3 hours** — opens `/earnings` in the background on a 3-hour alarm.
