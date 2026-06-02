@@ -8,16 +8,28 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## What it does
 
-1. **Duplicate tab detection** — when you open the same MTurk page in two tabs, the original tab plays a Bangla warning audio (`ভাই, সেকেন্ড পেজ টা ক্লোজ করেন`) and the duplicate tab shows a red warning screen with a 10-second countdown, then auto-closes.
+1. **Duplicate tab detection** — when you open the same MTurk page in two tabs, a Bangla warning audio plays and the duplicate tab shows a red warning screen with a 10-second countdown, then auto-closes.
 
-2. **Timer-based auto-close** — these tabs auto-close after their timer expires:
+2. **Timer-based auto-redirect** — these tabs auto-redirect to `/tasks` after their timer expires:
    - Homepage (`/`) → 30 seconds
    - `/dashboard` → 60 seconds
    - `/earnings` → 30 seconds
    - `/qualifications/assigned` → 120 seconds (2 min)
    - `/projects` (list) → 30 seconds
+   - `/status_details` → 60 seconds
 
-3. **Never closes the work tab** — `/tasks` and `/projects/...` (HIT pages) stay open forever.
+3. **Tasks page auto-refresh** — the `/tasks` queue hard-reloads every 10 minutes to keep it fresh.
+
+4. **Never closes the work tab** — `/tasks` and `/projects/...` (HIT pages) stay open and are never redirected.
+
+5. **Auto-open earnings every 3 hours** — opens `/earnings` in the background on a 3-hour alarm.
+
+6. **`about:blank` auto-handler** — whenever a stray `about:blank` tab appears, it is handled automatically:
+   - If a queue tab (`worker.mturk.com/tasks`) is **already open**, the blank tab is simply **closed**.
+   - If **no** queue tab is open, the blank tab is turned into the **Tasks queue** (`https://worker.mturk.com/tasks`) instead of being left blank — so you always have your queue running.
+   - A short 1.5s grace period lets real navigations (popups that load a real page) settle first, so legitimate pages are never closed.
+
+7. **Direct-deposit page block** — `/direct_deposit` is blocked and redirected to `/tasks` for safety.
 
 ## Installation
 
@@ -49,15 +61,18 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 ## Files in this folder
 
 - `manifest.json` — extension configuration
-- `background.js` — service worker that detects duplicates and closes tabs
+- `background.js` — service worker: detects duplicates, closes tabs, runs the 3-hour alarm, and handles `about:blank` tabs
 - `content.js` — injected into MTurk pages, plays audio, shows warnings, runs timers
-- `warning.mp3` — your Bangla audio file
+- `offscreen.html` / `offscreen.js` — offscreen document that plays the warning audio in the background
+- `mac-startup_7xOaB3X.mp3` — the Bangla warning audio file
 - `icon16.png`, `icon48.png`, `icon128.png` — extension icons
 
 ## To customize
 
 - **Change timer durations:** edit the `waitTime` values in `content.js` (in milliseconds: 30000 = 30 seconds)
-- **Change warning audio:** replace `warning.mp3` with any other MP3 file (keep the same filename)
+- **Change warning audio:** replace `mac-startup_7xOaB3X.mp3` with any other MP3 file (keep the same filename, or update the references in `content.js` and `offscreen.js`)
 - **Change duplicate countdown:** edit `autoCloseSeconds: 10` in `background.js`
+- **Change the queue/Tasks URL** used by the `about:blank` handler: edit `TASKS_URL` in `background.js`
+- **Tune the `about:blank` grace period:** edit `BLANK_SETTLE_MS` in `background.js` (default 1500 ms)
 
 After any edit, go to `chrome://extensions/` and click the **reload icon** on the extension card.
