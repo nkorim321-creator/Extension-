@@ -8,7 +8,7 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## What it does
 
-1. **Duplicate tab detection** — when you open the same MTurk page in two tabs, a Bangla warning audio plays and the duplicate tab shows a red warning screen with a 10-second countdown, then auto-closes.
+1. **Duplicate tab detection** — when you open the same MTurk page in two tabs, the duplicate tab shows a red warning screen with a 10-second countdown, then auto-closes. The warning sound is **off by default** (it can be re-enabled — see "To customize").
 
 2. **Timer-based auto-redirect** — these tabs auto-redirect to `/tasks` after their timer expires:
    - Homepage (`/`) → 30 seconds
@@ -51,12 +51,12 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## Verifying it works
 
-- Open MTurk in two tabs at the same URL → original tab plays the Bangla warning, duplicate tab shows the red warning and auto-closes after 10 seconds.
+- Open MTurk in two tabs at the same URL → the duplicate tab shows the red warning and auto-closes after 10 seconds (silent by default).
 - Open `https://worker.mturk.com/dashboard` → after 60 seconds, the tab closes automatically.
 
 ## Troubleshooting
 
-- **Audio doesn't play:** Open `chrome://settings/content/sound`, click "Add" under "Allowed to play sound", enter `https://worker.mturk.com`. This grants permanent autoplay permission.
+- **Want the warning sound back:** it is off by default. Set `SOUND_ENABLED = true` in **both** `background.js` and `content.js`. If it still doesn't play, open `chrome://settings/content/sound`, click "Add" under "Allowed to play sound", and enter `https://worker.mturk.com` to grant autoplay permission.
 - **Duplicate is not detected:** Make sure both tabs finished loading. The extension only fires after page load completes.
 - **Want to see what's happening:** Right-click the extension icon → Inspect popup, OR open `chrome://extensions/`, click "service worker" link under the extension to see background logs. Open DevTools (F12) on any MTurk page to see content script logs.
 
@@ -71,6 +71,7 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## To customize
 
+- **Turn the duplicate warning sound on/off:** set `SOUND_ENABLED` to `true` (on) or `false` (off) in **both** `background.js` and `content.js`. It is `false` (silent) by default.
 - **Change timer durations:** edit the `waitTime` values in `content.js` (in milliseconds: 30000 = 30 seconds)
 - **Change warning audio:** replace `mac-startup_7xOaB3X.mp3` with any other MP3 file (keep the same filename, or update the references in `content.js` and `offscreen.js`)
 - **Change duplicate countdown:** edit `autoCloseSeconds: 10` in `background.js`

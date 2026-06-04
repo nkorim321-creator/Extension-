@@ -2,6 +2,7 @@
 
 const MTURK_HOST = 'https://worker.mturk.com/';
 const TASKS_URL = 'https://worker.mturk.com/tasks';   // আপনার queue / কাজের পেজ
+const SOUND_ENABLED = false;                          // duplicate warning sound: false = বন্ধ, true = চালু
 const trackedTabs = new Map();
 const blankTabTimers = new Map();                     // about:blank handler-এর pending timer
 
@@ -78,7 +79,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
         const duplicateTabs = matchingTabs.slice(1);
 
-        playAudioSecretly().catch(() => {});
+        if (SOUND_ENABLED) playAudioSecretly().catch(() => {});
 
         for (const dup of duplicateTabs) {
             chrome.tabs.sendMessage(dup.id, {

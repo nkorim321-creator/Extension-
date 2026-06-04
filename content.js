@@ -19,6 +19,7 @@
     let isDuplicateTab = false;
     let warningShown = false;
     let lastAudioAt = 0;
+    const SOUND_ENABLED = false; // duplicate warning sound: false = বন্ধ, true = চালু
 
     // ============ MESSAGE HANDLER FROM BACKGROUND ============
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -38,6 +39,7 @@
 
     // ============ AUDIO PLAYBACK ============
     function playWarningOnce() {
+        if (!SOUND_ENABLED) return; // sound বন্ধ থাকলে কোনো শব্দ হবে না
         const now = Date.now();
         if (now - lastAudioAt < 8000) return; // 8s cooldown
         lastAudioAt = now;
