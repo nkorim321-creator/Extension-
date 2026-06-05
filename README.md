@@ -20,7 +20,7 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 3. **Tasks page auto-refresh** — the `/tasks` queue hard-reloads every 10 minutes to keep it fresh.
 
-   **White/blank queue recovery** — sometimes the `/tasks` page loads but renders as a blank white screen (the tab title is correct but the body is empty). The extension detects this ~6 seconds after load and instantly reloads a fresh queue link (`/tasks?_=<timestamp>`). It retries up to 4 times to avoid a reload loop, and resets once the queue renders normally.
+   **White/blank queue recovery** — sometimes the `/tasks` page loads but renders as a blank white screen (the tab title is correct but the body is empty). The extension polls for the queue content and, if it hasn't rendered within ~5 seconds, reloads a fresh queue link (`/tasks?_=<timestamp>`). It keeps retrying until the queue actually renders — fast at first, then backing off to roughly one try every 20 seconds so it never hammers MTurk, and it stops the moment the queue is visible. This works no matter which tool loaded the page (e.g. a `?_t=` link from Panda Crazy / MTurk Suite).
 
 4. **Never closes the work tab** — `/tasks` and `/projects/...` (HIT pages) stay open and are never redirected.
 

@@ -112,51 +112,74 @@
     }
 
     // ============ BLANK/WHITE TASKS PAGE RECOVERY ============
-    // মাঝে মাঝে worker.mturk.com/tasks পেজ লোড হয় ঠিকই, কিন্তু সাদা/ব্ল্যাঙ্ক হয়ে
-    // রেন্ডার হয় না (title আসে, কিন্তু body খালি)। তখন একটা fresh queue লিংক
-    // (?_=timestamp) দিয়ে সঙ্গে সঙ্গে রিলোড করে queue আবার ওপেন করে দিই।
-    const TASKS_BLANK_GRACE_MS = 6000; // পেজ রেন্ডার হওয়ার জন্য অপেক্ষা
-    const MAX_BLANK_RELOADS = 4;       // infinite loop ঠেকাতে সর্বোচ্চ চেষ্টা
+    // সমস্যা: মাঝে মাঝে worker.mturk.com/tasks (queue) পেজ লোড হয় ঠিকই, কিন্তু MTurk-এর
+    // content render হয় না — পেজ সাদা/ব্ল্যাঙ্ক থেকে যায়। লক্ষ্য: queue সবসময় render হোক।
+    // সমাধান: render হয়েছে কিনা অল্প অল্প করে poll করে দেখি; নির্দিষ্ট সময়ের মধ্যে render
+    // না হলে একটা fresh queue লিংক (?_=timestamp) দিয়ে reload করি — render হওয়া পর্যন্ত
+    // চেষ্টা চলতে থাকে (server down হলে hammer না করে backoff দেয়)।
+    const TASKS_RENDER_DEADLINE_MS = 5000; // এই সময়ের মধ্যে render না হলে fresh reload
+    const POLL_INTERVAL_MS = 500;          // কত পরপর চেক করব
+    const BLANK_RETRY_KEY = 'mturkBlankRetries';
+    const FAST_RETRIES = 5;                // প্রথম কয়েকবার সঙ্গে সঙ্গে চেষ্টা
+    const BACKOFF_MS = 20000;              // বারবার সাদা হলে hammer না করে ব্যাকঅফ
 
-    // queue সত্যিই রেন্ডার হয়েছে কিনা — পরিচিত content/লিংক দেখে বুঝি
+    // queue সত্যিই render হয়েছে কিনা — দৃশ্যমান (visible) পরিচিত লেখা দেখে বুঝি।
+    // innerText শুধু দৃশ্যমান লেখা দেয়, তাই সাদা পেজে এটা খালি থাকে।
     function tasksPageRendered() {
         const body = document.body;
         if (!body) return false;
         const text = (body.innerText || '').trim();
-        if (/HITs Queue|Sign Out|Browse all available HITs|Qualifications|Dashboard/i.test(text)) return true;
-        if (body.querySelector('a[href*="/dashboard"], a[href*="/qualifications"], a[href*="logout"], a[href*="signout"]')) return true;
-        return false;
+        return /Your HITs Queue|HITs Queue|Sign Out|Browse all available HITs|Worker ID|Qualifications|Dashboard/i.test(text);
     }
 
-    // পেজটা সাদা/ব্ল্যাঙ্ক কিনা — কোনো পরিচিত content নেই আর body প্রায় খালি
-    function looksBlankTasksPage() {
-        const text = (document.body && document.body.innerText || '').trim();
-        return !tasksPageRendered() && text.length < 40;
+    function reloadFreshQueue() {
+        window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
+    }
+
+    // সাদা পেজ ধরা পড়লে windowed-retry: প্রথম কয়েকবার দ্রুত, পরে backoff দিয়ে চেষ্টা চলতেই থাকে
+    function recordRetryAndReload() {
+        let arr = [];
+        try { arr = JSON.parse(sessionStorage.getItem(BLANK_RETRY_KEY) || '[]'); } catch (e) {}
+        if (!Array.isArray(arr)) arr = [];
+        const now = Date.now();
+        arr = arr.filter(t => now - t < 120000); // শুধু শেষ ২ মিনিটের চেষ্টা রাখি
+        arr.push(now);
+        try { sessionStorage.setItem(BLANK_RETRY_KEY, JSON.stringify(arr)); } catch (e) {}
+
+        if (arr.length <= FAST_RETRIES) {
+            console.warn('[MTurk Mgr] Tasks blank/white → reloading fresh queue (try ' + arr.length + ')');
+            reloadFreshQueue();
+        } else {
+            console.warn('[MTurk Mgr] Tasks still blank → backing off, retry in ' + (BACKOFF_MS / 1000) + 's');
+            setTimeout(reloadFreshQueue, BACKOFF_MS);
+        }
     }
 
     function setupTasksBlankRecovery() {
-        const check = () => {
-            if (isDuplicateTab) return; // duplicate warning দেখাচ্ছে — হাত দেব না
-            if (looksBlankTasksPage()) {
-                let n = 0;
-                try { n = parseInt(sessionStorage.getItem('mturkBlankReloads') || '0', 10) || 0; } catch (e) {}
-                if (n < MAX_BLANK_RELOADS) {
-                    try { sessionStorage.setItem('mturkBlankReloads', String(n + 1)); } catch (e) {}
-                    console.warn('[MTurk Mgr] Tasks page is BLANK/white → reloading fresh queue (try ' + (n + 1) + ')');
-                    window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
-                } else {
-                    console.warn('[MTurk Mgr] Tasks still blank after ' + MAX_BLANK_RELOADS + ' tries — stopping to avoid a loop (10-min reload will retry).');
-                }
-            } else {
-                // রেন্ডার ঠিক আছে → কাউন্টার রিসেট
-                try { sessionStorage.removeItem('mturkBlankReloads'); } catch (e) {}
+        const startedAt = Date.now();
+        let finished = false;
+        const poll = () => {
+            if (finished) return;
+            if (isDuplicateTab) { finished = true; return; } // duplicate warning UI — হাত দেব না
+            if (tasksPageRendered()) {
+                finished = true;
+                try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {} // render হয়েছে → reset
+                return;
             }
+            if (Date.now() - startedAt >= TASKS_RENDER_DEADLINE_MS) {
+                finished = true;
+                const text = (document.body && document.body.innerText || '').trim();
+                if (text.length < 120) {
+                    recordRetryAndReload(); // সত্যিই সাদা/খালি → fresh reload
+                } else {
+                    // লেখা আছে কিন্তু চেনা marker নেই (হয়তো MTurk markup বদলেছে) → reload করব না
+                    try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {}
+                }
+                return;
+            }
+            setTimeout(poll, POLL_INTERVAL_MS);
         };
-        if (document.readyState === 'complete') {
-            setTimeout(check, TASKS_BLANK_GRACE_MS);
-        } else {
-            window.addEventListener('load', () => setTimeout(check, TASKS_BLANK_GRACE_MS));
-        }
+        setTimeout(poll, 1000); // DOM তৈরি হওয়ার একটু সময় দিয়ে শুরু
     }
 
     // ============ TIMER-BASED AUTO-REDIRECT & RELOAD ============
