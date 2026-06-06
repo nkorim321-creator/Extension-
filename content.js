@@ -112,16 +112,19 @@
     }
 
     // ============ BLANK/WHITE TASKS PAGE RECOVERY ============
-    // সমস্যা: মাঝে মাঝে worker.mturk.com/tasks (queue) পেজ লোড হয় ঠিকই, কিন্তু MTurk-এর
-    // content render হয় না — পেজ সাদা/ব্ল্যাঙ্ক থেকে যায়। লক্ষ্য: queue সবসময় render হোক।
-    // সমাধান: render হয়েছে কিনা অল্প অল্প করে poll করে দেখি; নির্দিষ্ট সময়ের মধ্যে render
-    // না হলে একটা fresh queue লিংক (?_=timestamp) দিয়ে reload করি — render হওয়া পর্যন্ত
-    // চেষ্টা চলতে থাকে (server down হলে hammer না করে backoff দেয়)।
-    const TASKS_RENDER_DEADLINE_MS = 5000; // এই সময়ের মধ্যে render না হলে fresh reload
-    const POLL_INTERVAL_MS = 500;          // কত পরপর চেক করব
+    // লক্ষ্য: queue (worker.mturk.com/tasks) সবসময় render হোক, কখনো সাদা/white না থাকে।
+    //
+    // আগের ভুল: খুব দ্রুত (৫s) reload দিতাম — কিন্তু পেজ ধীরে load হলে render শেষ করার
+    // আগেই reload হয়ে যেত, ফলে বারবার সাদা (loop)। তাই এখন:
+    //   ১) আগে ধৈর্য ধরে অপেক্ষা করি — পেজ নিজে render করার যথেষ্ট সময় দিই।
+    //   ২) load শেষ হওয়ার পরও সাদা থাকলে (সত্যিই আটকে গেছে) তখন fresh queue reload করি।
+    //   ৩) render হলেই থেমে যাই; বারবার সাদা হলে backoff দিয়ে চেষ্টা চলতেই থাকে।
+    const POST_LOAD_GRACE_MS = 7000;   // load শেষ হওয়ার পরও এতক্ষণ সাদা থাকলে = আটকে গেছে
+    const HARD_DEADLINE_MS = 15000;    // যাই হোক, এতক্ষণ পরও সাদা থাকলে reload
+    const POLL_INTERVAL_MS = 1000;     // কত পরপর চেক করব
     const BLANK_RETRY_KEY = 'mturkBlankRetries';
-    const FAST_RETRIES = 5;                // প্রথম কয়েকবার সঙ্গে সঙ্গে চেষ্টা
-    const BACKOFF_MS = 20000;              // বারবার সাদা হলে hammer না করে ব্যাকঅফ
+    const FAST_RETRIES = 4;            // প্রথম কয়েকবার সঙ্গে সঙ্গে চেষ্টা
+    const BACKOFF_MS = 30000;          // তারপরও সাদা হলে hammer না করে ৩০s পর পর চেষ্টা
 
     // queue সত্যিই render হয়েছে কিনা — দৃশ্যমান (visible) পরিচিত লেখা দেখে বুঝি।
     // innerText শুধু দৃশ্যমান লেখা দেয়, তাই সাদা পেজে এটা খালি থাকে।
@@ -136,21 +139,21 @@
         window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
     }
 
-    // সাদা পেজ ধরা পড়লে windowed-retry: প্রথম কয়েকবার দ্রুত, পরে backoff দিয়ে চেষ্টা চলতেই থাকে
+    // সাদা পেজ আটকে গেলে windowed-retry: প্রথম কয়েকবার দ্রুত, তারপর backoff দিয়ে চলতেই থাকে
     function recordRetryAndReload() {
         let arr = [];
         try { arr = JSON.parse(sessionStorage.getItem(BLANK_RETRY_KEY) || '[]'); } catch (e) {}
         if (!Array.isArray(arr)) arr = [];
         const now = Date.now();
-        arr = arr.filter(t => now - t < 120000); // শুধু শেষ ২ মিনিটের চেষ্টা রাখি
+        arr = arr.filter(t => now - t < 180000); // শুধু শেষ ৩ মিনিটের চেষ্টা
         arr.push(now);
         try { sessionStorage.setItem(BLANK_RETRY_KEY, JSON.stringify(arr)); } catch (e) {}
 
         if (arr.length <= FAST_RETRIES) {
-            console.warn('[MTurk Mgr] Tasks blank/white → reloading fresh queue (try ' + arr.length + ')');
+            console.warn('[MTurk Mgr] Tasks stuck white → fresh reload (try ' + arr.length + ')');
             reloadFreshQueue();
         } else {
-            console.warn('[MTurk Mgr] Tasks still blank → backing off, retry in ' + (BACKOFF_MS / 1000) + 's');
+            console.warn('[MTurk Mgr] Tasks still white → backing off ' + (BACKOFF_MS / 1000) + 's then retry');
             setTimeout(reloadFreshQueue, BACKOFF_MS);
         }
     }
@@ -158,28 +161,38 @@
     function setupTasksBlankRecovery() {
         const startedAt = Date.now();
         let finished = false;
+        let loadCompleteAt = (document.readyState === 'complete') ? Date.now() : 0;
+        window.addEventListener('load', () => { if (!loadCompleteAt) loadCompleteAt = Date.now(); });
+
         const poll = () => {
             if (finished) return;
             if (isDuplicateTab) { finished = true; return; } // duplicate warning UI — হাত দেব না
+
             if (tasksPageRendered()) {
-                finished = true;
-                try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {} // render হয়েছে → reset
+                finished = true; // ✅ render হয়েছে — কিছুই করব না, just থেমে যাই
+                try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {}
                 return;
             }
-            if (Date.now() - startedAt >= TASKS_RENDER_DEADLINE_MS) {
-                finished = true;
+
+            const now = Date.now();
+            const stuckAfterLoad = loadCompleteAt && (now - loadCompleteAt >= POST_LOAD_GRACE_MS);
+            const hardTimeout = (now - startedAt >= HARD_DEADLINE_MS);
+
+            if (stuckAfterLoad || hardTimeout) {
                 const text = (document.body && document.body.innerText || '').trim();
                 if (text.length < 120) {
-                    recordRetryAndReload(); // সত্যিই সাদা/খালি → fresh reload
-                } else {
-                    // লেখা আছে কিন্তু চেনা marker নেই (হয়তো MTurk markup বদলেছে) → reload করব না
-                    try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {}
+                    finished = true;
+                    recordRetryAndReload(); // সত্যিই সাদা/খালি — fresh reload
+                    return;
                 }
+                // লেখা আছে কিন্তু চেনা marker নেই (হয়তো MTurk markup বদলেছে) → reload করব না
+                finished = true;
+                try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {}
                 return;
             }
             setTimeout(poll, POLL_INTERVAL_MS);
         };
-        setTimeout(poll, 1000); // DOM তৈরি হওয়ার একটু সময় দিয়ে শুরু
+        setTimeout(poll, 1500); // DOM তৈরি হওয়ার একটু সময় দিয়ে শুরু
     }
 
     // ============ TIMER-BASED AUTO-REDIRECT & RELOAD ============
