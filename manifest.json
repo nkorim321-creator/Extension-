@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MTurk Tab Manager (Bangla Warning)",
-  "version": "2.1",
-  "description": "Auto-closes MTurk timer tabs, silent duplicate-tab warning, reloads the queue every 60s, draws the queue from JSON when MTurk white-screens, auto-opens earnings every 3 hours, and handles stray about:blank tabs.",
+  "version": "2.2",
+  "description": "Auto-closes MTurk timer tabs, silent duplicate-tab warning, plain-reloads the queue every 60s, recovers white queue pages the way a manual reload does (and draws the queue from JSON as a last resort), auto-opens earnings every 3 hours, and handles stray about:blank tabs.",
   "permissions": [
     "tabs",
     "alarms",

@@ -114,14 +114,14 @@
     // ============ BLANK/WHITE TASKS PAGE RECOVERY ============
     // লক্ষ্য: queue (worker.mturk.com/tasks) সবসময় render হোক, কখনো সাদা/white না থাকে।
     //
-    // আগের ভুল: খুব দ্রুত (৫s) reload দিতাম — কিন্তু পেজ ধীরে load হলে render শেষ করার
-    // আগেই reload হয়ে যেত, ফলে বারবার সাদা (loop)। তাই এখন:
-    //   ১) আগে ধৈর্য ধরে অপেক্ষা করি — পেজ নিজে render করার যথেষ্ট সময় দিই।
-    //   ২) load শেষ হওয়ার পরও সাদা থাকলে (সত্যিই আটকে গেছে) তখন fresh queue reload করি।
-    //   ৩) render হলেই থেমে যাই; বারবার সাদা হলে backoff দিয়ে চেষ্টা চলতেই থাকে।
+    // মূল আবিষ্কার (worker confirmed): white হলে মাউস দিয়ে একই পেজ reload করলে normal হয়,
+    // কিন্তু নতুন ?_=timestamp URL-এ গেলে MTurk আবার সাদা পেজ দেয়। তাই:
+    //   ১) আগে ধৈর্য ধরে অপেক্ষা করি — পেজ নিজে render করার সময় দিই।
+    //   ২) load শেষেও সাদা থাকলে ঠিক মাউস-এর মতো plain reload করি (cache-buster নয়)।
+    //   ৩) render হলেই থেমে যাই; কয়েকবার reload-এও সাদা হলে JSON থেকে queue এঁকে দিই।
     const POST_LOAD_GRACE_MS = 6000;   // load শেষ হওয়ার পরও এতক্ষণ সাদা থাকলে = আটকে গেছে
     const HARD_DEADLINE_MS = 13000;    // যাই হোক, এতক্ষণ পরও সাদা থাকলে ব্যবস্থা নেব
-    const QUEUE_RELOAD_MS = 60000;     // queue পেজ প্রতি ৬০ সেকেন্ডে fresh reload
+    const QUEUE_RELOAD_MS = 60000;     // queue পেজ প্রতি ৬০ সেকেন্ডে plain reload (নতুন HIT ধরতে)
     const POLL_INTERVAL_MS = 1000;     // কত পরপর চেক করব
     const BLANK_RETRY_KEY = 'mturkBlankRetries';
     const FAST_RETRIES = 4;            // প্রথম কয়েকবার সঙ্গে সঙ্গে চেষ্টা
@@ -136,8 +136,14 @@
         return /Your HITs Queue|HITs Queue|Sign Out|Browse all available HITs|Worker ID|Qualifications|Dashboard/i.test(text);
     }
 
-    function reloadFreshQueue() {
-        window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
+    // মাউস দিয়ে যে reload করলে পেজ ঠিক হয়ে যায় — হুবহু সেটাই করি: একই URL plain reload।
+    // নতুন ?_=timestamp URL-এ গেলে MTurk উল্টো সাদা পেজ দেয় (worker confirmed), তাই
+    // cache-buster URL আর ব্যবহার করি না — শুধু window.location.reload()।
+    function plainReload() {
+        try { window.location.reload(); }
+        catch (e) {
+            try { window.location.href = 'https://worker.mturk.com/tasks'; } catch (e2) {}
+        }
     }
 
     function escHtml(s) {
@@ -221,22 +227,25 @@
         });
     }
 
-    // সাদা পেজ আটকে গেলে windowed-retry: প্রথম কয়েকবার দ্রুত, তারপর backoff দিয়ে চলতেই থাকে
-    function recordRetryAndReload() {
+    // সাদা পেজ ধরা পড়লে: আগে ঠিক মাউস-reload-এর মতো plain reload করি (এটাই বাস্তবে কাজ করে)।
+    // কয়েকবার reload-এও সাদা থাকলে তখন শেষ উপায় হিসেবে JSON থেকে queue এঁকে দিই।
+    function recordRetryAndRecover() {
         let arr = [];
         try { arr = JSON.parse(sessionStorage.getItem(BLANK_RETRY_KEY) || '[]'); } catch (e) {}
         if (!Array.isArray(arr)) arr = [];
-        const now = Date.now();
-        arr = arr.filter(t => now - t < 180000); // শুধু শেষ ৩ মিনিটের চেষ্টা
-        arr.push(now);
+        const t0 = Date.now();
+        arr = arr.filter(t => t0 - t < 180000); // শুধু শেষ ৩ মিনিটের চেষ্টা
+        arr.push(t0);
         try { sessionStorage.setItem(BLANK_RETRY_KEY, JSON.stringify(arr)); } catch (e) {}
 
         if (arr.length <= FAST_RETRIES) {
-            console.warn('[MTurk Mgr] Tasks stuck white → fresh reload (try ' + arr.length + ')');
-            reloadFreshQueue();
+            console.warn('[MTurk Mgr] White queue → plain reload like manual (try ' + arr.length + ')');
+            plainReload();
         } else {
-            console.warn('[MTurk Mgr] Tasks still white → backing off ' + (BACKOFF_MS / 1000) + 's then retry');
-            setTimeout(reloadFreshQueue, BACKOFF_MS);
+            console.warn('[MTurk Mgr] Still white after ' + FAST_RETRIES + ' reloads → drawing queue from JSON');
+            tryJsonQueueFallback(function () {
+                setTimeout(plainReload, BACKOFF_MS); // JSON-ও fail করলে ধীরে আবার reload
+            });
         }
     }
 
@@ -264,8 +273,8 @@
                 const text = (document.body && document.body.innerText || '').trim();
                 if (text.length < 120) {
                     finished = true;
-                    // সত্যিই সাদা/খালি — আগে JSON থেকে queue আঁকি; সেটাও fail করলে reload ladder
-                    tryJsonQueueFallback(recordRetryAndReload);
+                    // সত্যিই সাদা/খালি — আগে মাউস-এর মতো plain reload; বারবার সাদা হলে JSON fallback
+                    recordRetryAndRecover();
                     return;
                 }
                 // লেখা আছে কিন্তু চেনা marker নেই (হয়তো MTurk markup বদলেছে) → reload করব না
@@ -280,7 +289,7 @@
 
     // ============ TIMER-BASED AUTO-REDIRECT & RELOAD ============
 
-    // ১. Tasks পেজের জন্য: প্রতি ৬০ সেকেন্ডে fresh reload (cache এড়াতে ?_=timestamp)
+    // ১. Tasks পেজের জন্য: প্রতি ৬০ সেকেন্ডে plain reload (মাউস-reload-এর মতো, একই URL)।
     //    শুধু queue পেজ reload হয় — খোলা HIT (/projects/...) কখনোই না, কাজ নষ্ট হবে না।
     if (fullUrl === "https://worker.mturk.com/tasks" || fullUrl.includes("/tasks?")) {
         // সাদা/ব্ল্যাঙ্ক queue পেজ হলে JSON-fallback / reload-এর ব্যবস্থা
@@ -288,8 +297,8 @@
 
         setTimeout(() => {
             if (!isDuplicateTab) {
-                console.log('[MTurk Mgr] 60s tick - reloading fresh queue');
-                window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
+                console.log('[MTurk Mgr] 60s tick - plain reload (like manual mouse reload)');
+                plainReload();
             }
         }, QUEUE_RELOAD_MS);
         return;
