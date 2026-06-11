@@ -18,9 +18,9 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
    - `/projects` (list) → 30 seconds
    - `/status_details` → 60 seconds
 
-3. **Tasks page auto-refresh** — the `/tasks` queue hard-reloads every 10 minutes to keep it fresh.
+3. **Tasks page auto-refresh** — the `/tasks` queue reloads with a fresh cache-busting link (`/tasks?_=<timestamp>`) every **60 seconds**. Only the queue page reloads — an open HIT (`/projects/...`) is never reloaded, so accepted work is never lost.
 
-   **White/blank queue recovery** — sometimes the `/tasks` page loads but renders as a blank white screen (the tab title is correct but the body is empty). The extension first gives the page time to finish rendering on its own (it does **not** reload eagerly, since reloading too soon just interrupts a slow load and keeps it white). Only if the page is still blank after it has finished loading (≈7s after load, or ≈15s hard limit) does it reload a fresh queue link (`/tasks?_=<timestamp>`). It keeps retrying until the queue actually renders — a few quick tries, then backing off to one try every ~30 seconds so it never hammers MTurk — and it stops the instant the queue is visible. Works no matter which tool loaded the page (e.g. a `?_t=` link from Panda Crazy / MTurk Suite).
+   **White/blank queue recovery** — sometimes MTurk serves the `/tasks` page but it renders as a blank white screen, and reloading alone doesn't help because the server keeps answering the same way (typically rate-limiting when several MTurk tools run at once). The extension now goes around the broken page: if the queue hasn't rendered ~6s after the page finishes loading (13s hard cap), it fetches the queue data directly from MTurk's JSON API (`/tasks?format=json`) and **draws the queue itself** — requester, title, reward, time remaining, and working **Work** buttons — so your queue is usable even while MTurk's own page is broken. The fallback table uses standard rows and `/projects/.../tasks/...` links, so auto-work userscripts keep working on it too. The real page gets retried automatically on the next 60-second reload. If even the JSON call fails, it falls back to fresh reloads (a few quick tries, then one every ~30s so MTurk is never hammered).
 
 4. **Never closes the work tab** — `/tasks` and `/projects/...` (HIT pages) stay open and are never redirected.
 
@@ -75,6 +75,7 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 - **Change timer durations:** edit the `waitTime` values in `content.js` (in milliseconds: 30000 = 30 seconds)
 - **Change warning audio:** replace `mac-startup_7xOaB3X.mp3` with any other MP3 file (keep the same filename, or update the references in `content.js` and `offscreen.js`)
 - **Change duplicate countdown:** edit `autoCloseSeconds: 10` in `background.js`
+- **Change the queue reload interval:** edit `QUEUE_RELOAD_MS` in `content.js` (default 60000 = 60 seconds)
 - **Change the queue/Tasks URL** used by the `about:blank` handler: edit `TASKS_URL` in `background.js`
 - **Tune the `about:blank` grace period:** edit `BLANK_SETTLE_MS` in `background.js` (default 1500 ms)
 

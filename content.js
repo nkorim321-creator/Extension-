@@ -119,8 +119,9 @@
     //   ১) আগে ধৈর্য ধরে অপেক্ষা করি — পেজ নিজে render করার যথেষ্ট সময় দিই।
     //   ২) load শেষ হওয়ার পরও সাদা থাকলে (সত্যিই আটকে গেছে) তখন fresh queue reload করি।
     //   ৩) render হলেই থেমে যাই; বারবার সাদা হলে backoff দিয়ে চেষ্টা চলতেই থাকে।
-    const POST_LOAD_GRACE_MS = 7000;   // load শেষ হওয়ার পরও এতক্ষণ সাদা থাকলে = আটকে গেছে
-    const HARD_DEADLINE_MS = 15000;    // যাই হোক, এতক্ষণ পরও সাদা থাকলে reload
+    const POST_LOAD_GRACE_MS = 6000;   // load শেষ হওয়ার পরও এতক্ষণ সাদা থাকলে = আটকে গেছে
+    const HARD_DEADLINE_MS = 13000;    // যাই হোক, এতক্ষণ পরও সাদা থাকলে ব্যবস্থা নেব
+    const QUEUE_RELOAD_MS = 60000;     // queue পেজ প্রতি ৬০ সেকেন্ডে fresh reload
     const POLL_INTERVAL_MS = 1000;     // কত পরপর চেক করব
     const BLANK_RETRY_KEY = 'mturkBlankRetries';
     const FAST_RETRIES = 4;            // প্রথম কয়েকবার সঙ্গে সঙ্গে চেষ্টা
@@ -137,6 +138,87 @@
 
     function reloadFreshQueue() {
         window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
+    }
+
+    function escHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    // শেষ অস্ত্র: MTurk-এর নিজের পেজ render না হলেও queue-এর ডেটা JSON API থেকে এনে
+    // নিজেরাই টেবিল এঁকে দিই — requester, title, reward, time, আর কাজ করা Work লিংকসহ।
+    // টেবিলটা <tr> + /projects/.../tasks/... href দিয়ে আঁকা, তাই অন্য auto-work
+    // userscript-গুলোর row-detector এখানেও কাজ করবে।
+    function renderFallbackQueue(tasks, total) {
+        const count = (total != null ? total : tasks.length);
+        const rows = tasks.map(function (t) {
+            const p = t.project || {};
+            let url = t.task_url || '';
+            if (!url && p.hit_set_id && t.task_id) {
+                url = '/projects/' + p.hit_set_id + '/tasks/' + t.task_id +
+                      (t.assignment_id ? '?assignment_id=' + t.assignment_id : '');
+            }
+            if (url && url.charAt(0) === '/') url = 'https://worker.mturk.com' + url;
+            const reward = p.monetary_reward && p.monetary_reward.amount_in_dollars;
+            const mins = Math.max(0, Math.round((t.time_to_deadline_in_seconds || 0) / 60));
+            return '<tr style="border-bottom:1px solid #ddd">' +
+                '<td style="padding:10px 8px">' + escHtml(p.requester_name) + '</td>' +
+                '<td style="padding:10px 8px">' + escHtml(p.title) + '</td>' +
+                '<td style="padding:10px 8px">' + (reward != null ? '$' + escHtml(reward) : '') + '</td>' +
+                '<td style="padding:10px 8px">' + mins + ' min</td>' +
+                '<td style="padding:10px 8px">' + (url ? '<a href="' + escHtml(url) + '" style="background:#e47911;color:#fff;padding:6px 18px;border-radius:3px;text-decoration:none;font-weight:bold">Work</a>' : '') + '</td>' +
+                '</tr>';
+        }).join('');
+        document.body.innerHTML =
+            '<div style="font-family:Arial,sans-serif;max-width:1100px;margin:0 auto;padding:16px">' +
+            '<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.5">' +
+            '⚠️ MTurk-এর আসল পেজ সাদা (white) হয়ে গিয়েছিল, তাই MTurk Tab Manager queue-টা সরাসরি ডেটা থেকে এঁকে দিয়েছে। ' +
+            'The real MTurk page failed to render, so this queue was drawn from live data. ' +
+            '৬০ সেকেন্ডের মধ্যে আসল পেজ আবার নিজে নিজেই চেষ্টা হবে — অথবা ' +
+            '<a href="https://worker.mturk.com/tasks">আসল queue পেজ এখনই খুলুন</a>।</div>' +
+            '<h1 style="color:#e47911;font-size:26px;margin:6px 0 14px">Your HITs Queue (' + count + ')</h1>' +
+            (tasks.length
+                ? '<table style="width:100%;border-collapse:collapse;font-size:14px;background:#fff">' +
+                  '<thead><tr style="background:#f3f3f3;text-align:left">' +
+                  '<th style="padding:8px">Requester</th><th style="padding:8px">Title</th>' +
+                  '<th style="padding:8px">Reward</th><th style="padding:8px">Time Remaining</th>' +
+                  '<th style="padding:8px">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>'
+                : '<p style="font-size:15px">You don\'t currently have any HITs accepted. ' +
+                  '<a href="https://worker.mturk.com/projects">Browse all available HITs</a>.</p>') +
+            '</div>';
+        document.title = 'Your HITs Queue (' + count + ')';
+    }
+
+    function tryJsonQueueFallback(onFail) {
+        // আগে একটা placeholder এঁকে দিই — পেজটা আর "সাদা" থাকে না, আর অন্য tool-এর
+        // white-page guard-ও ভুল করে reload মারে না (mturk লিংক + যথেষ্ট লেখা আছে)।
+        try {
+            document.body.innerHTML =
+                '<div style="font-family:Arial,sans-serif;padding:30px;font-size:15px;line-height:1.7;max-width:900px;margin:0 auto">' +
+                '<h2 style="color:#e47911;margin:0 0 10px">MTurk Tab Manager</h2>' +
+                'সাদা (white) queue পেজ ধরা পড়েছে — MTurk-এর render fail করেছে, তাই queue-এর ডেটা ' +
+                'সরাসরি আনা হচ্ছে, কয়েক সেকেন্ড অপেক্ষা করুন… ' +
+                'White queue page detected — fetching your HITs queue data directly from ' +
+                '<a href="https://worker.mturk.com/tasks">worker.mturk.com/tasks</a> instead.</div>';
+        } catch (e) {}
+        fetch('https://worker.mturk.com/tasks?format=json', {
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: { 'Accept': 'application/json' }
+        }).then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        }).then(function (json) {
+            const tasks = (json && Array.isArray(json.tasks)) ? json.tasks : null;
+            if (!tasks) throw new Error('unexpected JSON shape');
+            renderFallbackQueue(tasks, json.total_num_results);
+            try { sessionStorage.removeItem(BLANK_RETRY_KEY); } catch (e) {}
+            console.warn('[MTurk Mgr] White page → queue rendered from JSON (' + tasks.length + ' HITs)');
+        }).catch(function (err) {
+            console.warn('[MTurk Mgr] JSON queue fallback failed (' + err.message + ') → reload ladder');
+            onFail();
+        });
     }
 
     // সাদা পেজ আটকে গেলে windowed-retry: প্রথম কয়েকবার দ্রুত, তারপর backoff দিয়ে চলতেই থাকে
@@ -182,7 +264,8 @@
                 const text = (document.body && document.body.innerText || '').trim();
                 if (text.length < 120) {
                     finished = true;
-                    recordRetryAndReload(); // সত্যিই সাদা/খালি — fresh reload
+                    // সত্যিই সাদা/খালি — আগে JSON থেকে queue আঁকি; সেটাও fail করলে reload ladder
+                    tryJsonQueueFallback(recordRetryAndReload);
                     return;
                 }
                 // লেখা আছে কিন্তু চেনা marker নেই (হয়তো MTurk markup বদলেছে) → reload করব না
@@ -197,24 +280,25 @@
 
     // ============ TIMER-BASED AUTO-REDIRECT & RELOAD ============
 
-    // ১. Tasks পেজের জন্য: প্রতি ১০ মিনিটে (৬০০,০০০ ms) ফুল রিলোড হবে
+    // ১. Tasks পেজের জন্য: প্রতি ৬০ সেকেন্ডে fresh reload (cache এড়াতে ?_=timestamp)
+    //    শুধু queue পেজ reload হয় — খোলা HIT (/projects/...) কখনোই না, কাজ নষ্ট হবে না।
     if (fullUrl === "https://worker.mturk.com/tasks" || fullUrl.includes("/tasks?")) {
-        // সাদা/ব্ল্যাঙ্ক queue পেজ হলে সঙ্গে সঙ্গে fresh queue রিলোড করার ব্যবস্থা
+        // সাদা/ব্ল্যাঙ্ক queue পেজ হলে JSON-fallback / reload-এর ব্যবস্থা
         setupTasksBlankRecovery();
 
         setTimeout(() => {
             if (!isDuplicateTab) {
-                console.log('[MTurk Mgr] 10 min expired - Hard reloading Tasks page');
-                window.location.reload(); // পেজ পারফেক্টলি হার্ড রিলোড করবে
+                console.log('[MTurk Mgr] 60s tick - reloading fresh queue');
+                window.location.replace('https://worker.mturk.com/tasks?_=' + Date.now());
             }
-        }, 600000);
+        }, QUEUE_RELOAD_MS);
         return;
     }
 
     // ২. প্রজেক্টের ভেতরে থাকলে কখনো রিলোড বা রিডাইরেক্ট হবে না
     if (fullUrl.includes("/projects/")) return;
 
-    // ৩. অন্যান্য পেজের জন্য: আগের মতোই নির্দিষ্ট সময় পর Tasks-এ রিডাইরেক্ট হবে
+    // ৩. অন্যান্য পেজের জন্য: আগের মতোই নির্দিষ্ট সময় পর Tasks-এ রিডাইরেক্ট হবে
     let waitTime = null;
     if (fullUrl === "https://worker.mturk.com/" || fullUrl === "https://worker.mturk.com") {
         waitTime = 30000;
