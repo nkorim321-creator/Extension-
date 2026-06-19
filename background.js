@@ -223,11 +223,14 @@ chrome.webRequest.onCompleted.addListener(
 
 chrome.webRequest.onErrorOccurred.addListener(
     (details) => {
+        // ERR_ABORTED মানে ইউজার/স্ক্রিপ্ট নিজেই navigate বা reload করেছে — এটা আসল network
+        // drop নয়। এতে retry করলে ভুল করে loading ট্যাবকে আবার /tasks-এ টেনে আনে। তাই skip।
+        if (details.error === 'net::ERR_ABORTED') return;
         if (details.type === 'main_frame' && details.tabId >= 0) {
             console.log('[MTurk Mgr] Network Drop detected! Retrying in 3 seconds...');
             setTimeout(() => {
                 chrome.tabs.update(details.tabId, { url: details.url }).catch(() => {});
-            }, 3000); 
+            }, 3000);
         }
     },
     { urls: networkFilterUrls }

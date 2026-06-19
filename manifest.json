@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MTurk Tab Manager (Bangla Warning)",
-  "version": "2.5",
+  "version": "2.6",
   "description": "Auto-closes MTurk timer tabs, recovers white queue pages, handles network errors, and blocks secure pages.",
   "permissions": [
     "tabs",

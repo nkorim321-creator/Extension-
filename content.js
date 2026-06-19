@@ -126,7 +126,7 @@
     // ============ BLANK/WHITE TASKS PAGE RECOVERY ============
     const POST_LOAD_GRACE_MS = 6000;
     const HARD_DEADLINE_MS = 13000;
-    const QUEUE_RELOAD_MS = 60000;
+    const QUEUE_RELOAD_MS = 150000;   // queue পেজ প্রতি ১৫০ সেকেন্ডে (২.৫ মিনিট) plain reload
     const POLL_INTERVAL_MS = 1000;
     const BLANK_RETRY_KEY = 'mturkBlankRetries';
     const FAST_RETRIES = 4;
@@ -176,7 +176,7 @@
             '<div style="font-family:Arial,sans-serif;max-width:1100px;margin:0 auto;padding:16px">' +
             '<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.5">' +
             '⚠️ MTurk-এর আসল পেজ সাদা (white) হয়ে গিয়েছিল, তাই MTurk Tab Manager queue-টা সরাসরি ডেটা থেকে এঁকে দিয়েছে। ' +
-            '৬০ সেকেন্ডের মধ্যে আসল পেজ আবার নিজে নিজেই চেষ্টা হবে — অথবা ' +
+            'কিছুক্ষণের মধ্যে আসল পেজ আবার নিজে নিজেই চেষ্টা হবে — অথবা ' +
             '<a href="https://worker.mturk.com/tasks">আসল queue পেজ এখনই খুলুন</a>।</div>' +
             '<h1 style="color:#e47911;font-size:26px;margin:6px 0 14px">Your HITs Queue (' + count + ')</h1>' +
             (tasks.length
@@ -280,7 +280,7 @@
         setupTasksBlankRecovery();
         setTimeout(() => {
             if (!isDuplicateTab) {
-                console.log('[MTurk Mgr] 60s tick - plain reload');
+                console.log('[MTurk Mgr] 150s tick - plain reload');
                 plainReload();
             }
         }, QUEUE_RELOAD_MS);
