@@ -1,25 +1,47 @@
 // background.js - MTurk Tab Manager service worker
 
 const MTURK_HOST = 'https://worker.mturk.com/';
-const TASKS_URL = 'https://worker.mturk.com/tasks';   // আপনার queue / কাজের পেজ
-const trackedTabs = new Map();
-const blankTabTimers = new Map();                     // about:blank handler-এর pending timer
+const TASKS_URL = 'https://worker.mturk.com/tasks';   
+const SOUND_ENABLED = false;                          
 
+let trackedTabs = new Map(); 
+const blankTabTimers = new Map();                     
+
+// ============ MEMORY AMNESIA FIX (MV3 SAFE) ============
+// সার্ভিস ওয়ার্কার ঘুম থেকে ওঠার সাথে সাথে সেফলি ডাটাবেস লোড করবে
+chrome.storage.local.get(['trackedTabsData']).then((result) => {
+    if (result.trackedTabsData) {
+        try {
+            const parsedData = JSON.parse(result.trackedTabsData);
+            trackedTabs = new Map(parsedData);
+            console.log('[MTurk Mgr] Loaded tracked tabs from memory.');
+        } catch (e) {
+            console.warn('[MTurk Mgr] Failed to parse tracked tabs data', e);
+        }
+    }
+}).catch(err => console.warn('[MTurk Mgr] Storage access error:', err));
+
+function saveTrackedTabs() {
+    chrome.storage.local.set({ 
+        trackedTabsData: JSON.stringify(Array.from(trackedTabs.entries())) 
+    }).catch(err => console.warn('[MTurk Mgr] Storage save error:', err));
+}
+
+// ============ UTILITIES ============
 function normalizeUrl(url) {
     if (!url) return '';
     return url.split('?')[0].split('#')[0];
 }
 
 function isMturkUrl(url) {
-    return url && url.startsWith(MTURK_HOST);
+    return typeof url === 'string' && url.startsWith(MTURK_HOST);
 }
 
-// queue/Tasks পেজ চেনার জন্য — /tasks এবং /tasks?_=... দুটোই ধরবে
 function isQueueUrl(url) {
     return typeof url === 'string' && url.startsWith(TASKS_URL);
 }
 
-// ৬ ঘণ্টার বদলে এখন ৩ ঘণ্টা (১৮০ মিনিট) পর পর অ্যালার্ম বাজবে
+// ============ 3-HOUR EARNINGS TAB ============
 chrome.runtime.onInstalled.addListener(() => {
     chrome.alarms.create('openEarningsTab', { periodInMinutes: 180 });
 });
@@ -27,18 +49,17 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'openEarningsTab') {
         chrome.tabs.create({ url: 'https://worker.mturk.com/earnings', active: false }, (tab) => {
-            // পেজ সাদা হয়ে আটকে থাকা রোধ করতে ২ সেকেন্ড পর ব্যাকগ্রাউন্ড থেকে জোর করে রিলোড দেওয়া হলো
-            setTimeout(() => {
-                if (tab && tab.id) {
+            if (tab && tab.id) {
+                setTimeout(() => {
                     chrome.tabs.reload(tab.id).catch(() => {});
-                }
-            }, 2000);
+                }, 2000);
+            }
         });
         console.log('[MTurk Mgr] Auto-opened earnings tab (3-hour interval)');
     }
 });
 
-// --- OFFSCREEN AUDIO SETUP ---
+// ============ OFFSCREEN AUDIO ============
 async function playAudioSecretly() {
     try {
         await chrome.offscreen.createDocument({
@@ -47,61 +68,67 @@ async function playAudioSecretly() {
             justification: 'Play warning audio in background'
         });
     } catch (e) {
-        // Document already exists, ignore error
+        // Document already exists, ignore safely
     }
-    // Tell the offscreen document to play the sound
-    chrome.runtime.sendMessage({ type: 'PLAY_AUDIO_OFFSCREEN' });
+    chrome.runtime.sendMessage({ type: 'PLAY_AUDIO_OFFSCREEN' }).catch(() => {});
 }
-// ----------------------------
 
+// ============ DUPLICATE TAB TRACKING ============
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status !== 'complete' || !isMturkUrl(tab.url)) return;
 
     const normalizedUrl = normalizeUrl(tab.url);
-
-    trackedTabs.set(tabId, {
-        url: normalizedUrl,
-        openedAt: Date.now()
-    });
-
-    const allTabs = await chrome.tabs.query({});
-    const matchingTabs = allTabs.filter(t =>
-        isMturkUrl(t.url) && normalizeUrl(t.url) === normalizedUrl
-    );
-
-    if (matchingTabs.length > 1) {
-        matchingTabs.sort((a, b) => {
-            const aOpened = trackedTabs.get(a.id)?.openedAt || a.id;
-            const bOpened = trackedTabs.get(b.id)?.openedAt || b.id;
-            return aOpened - bOpened;
+    const existingTab = trackedTabs.get(tabId);
+    
+    // শুধুমাত্র নতুন ট্যাবেই টাইম সেট হবে, পুরনো ট্যাব সবসময় নিরাপদ (Idle) থাকবে
+    if (!existingTab) {
+        trackedTabs.set(tabId, {
+            url: normalizedUrl,
+            openedAt: Date.now()
         });
-
-        const duplicateTabs = matchingTabs.slice(1);
-
-        playAudioSecretly().catch(() => {});
-
-        for (const dup of duplicateTabs) {
-            chrome.tabs.sendMessage(dup.id, {
-                type: 'SHOW_DUPLICATE_WARNING',
-                autoCloseSeconds: 10
-            }).catch(() => {});
-        }
+    } else {
+        existingTab.url = normalizedUrl; 
+        trackedTabs.set(tabId, existingTab);
     }
-});
+    saveTrackedTabs(); 
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'CLOSE_MY_TAB') {
-        const tabId = sender.tab?.id;
-        if (tabId) {
-            chrome.tabs.remove(tabId).catch(err => console.warn(err));
-            sendResponse({ ok: true });
+    // ডুপ্লিকেট ওয়ার্নিং শুধুমাত্র /tasks লিংকের জন্যই কাজ করবে
+    if (isQueueUrl(normalizedUrl)) {
+        try {
+            const allTabs = await chrome.tabs.query({});
+            const matchingTabs = allTabs.filter(t =>
+                isQueueUrl(t.url) && normalizeUrl(t.url) === normalizedUrl
+            );
+
+            if (matchingTabs.length > 1) {
+                matchingTabs.sort((a, b) => {
+                    const aOpened = trackedTabs.get(a.id)?.openedAt || a.id;
+                    const bOpened = trackedTabs.get(b.id)?.openedAt || b.id;
+                    return aOpened - bOpened;
+                });
+
+                const duplicateTabs = matchingTabs.slice(1);
+
+                if (SOUND_ENABLED) playAudioSecretly();
+
+                for (const dup of duplicateTabs) {
+                    chrome.tabs.sendMessage(dup.id, {
+                        type: 'SHOW_DUPLICATE_WARNING',
+                        autoCloseSeconds: 10
+                    }).catch(() => {});
+                }
+            }
+        } catch (err) {
+            console.warn('[MTurk Mgr] Error checking duplicates:', err);
         }
-        return true;
     }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-    trackedTabs.delete(tabId);
+    if (trackedTabs.has(tabId)) {
+        trackedTabs.delete(tabId);
+        saveTrackedTabs();
+    }
     const pending = blankTabTimers.get(tabId);
     if (pending) {
         clearTimeout(pending);
@@ -109,17 +136,21 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     }
 });
 
-// ============ ABOUT:BLANK AUTO-HANDLER ============
-// নিয়ম:
-//  - কোনো about:blank ট্যাব দেখলে সেটা auto বন্ধ/হ্যান্ডেল হবে।
-//  - যদি কোনো queue (worker.mturk.com/tasks) ট্যাব খোলা না থাকে → blank ট্যাবটিকেই
-//    Tasks queue বানিয়ে দেওয়া হবে (লিংকটা রান হবে), ফলে blank আর থাকবে না।
-//  - যদি queue ট্যাব আগে থেকেই খোলা থাকে → শুধু about:blank ট্যাবটা বন্ধ করে দেওয়া হবে।
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'CLOSE_MY_TAB') {
+        const tabId = sender.tab?.id;
+        if (tabId) {
+            chrome.tabs.remove(tabId).catch(() => {});
+            sendResponse({ ok: true });
+        }
+        return true;
+    }
+});
 
-const BLANK_SETTLE_MS = 1500;     // আসল navigation শেষ হওয়ার জন্য একটু সময় দিই
+// ============ ABOUT:BLANK AUTO-HANDLER ============
+const BLANK_SETTLE_MS = 1500;     
 
 function scheduleBlankCheck(tabId) {
-    // একই ট্যাবের জন্য আগের timer থাকলে রিসেট করি (debounce)
     const existing = blankTabTimers.get(tabId);
     if (existing) clearTimeout(existing);
 
@@ -132,37 +163,29 @@ function scheduleBlankCheck(tabId) {
 }
 
 async function handleAboutBlankTab(tabId) {
-    let tab;
     try {
-        tab = await chrome.tabs.get(tabId);
-    } catch (e) {
-        return; // ট্যাব ইতিমধ্যে বন্ধ হয়ে গেছে
-    }
+        const tab = await chrome.tabs.get(tabId);
+        const currentUrl = tab.url || tab.pendingUrl || '';
+        if (currentUrl !== 'about:blank') return;
 
-    // আবার যাচাই: ট্যাবটা এখনো সত্যিই about:blank তো? (এর মধ্যে কোথাও navigate করলে হাত দেব না)
-    const currentUrl = tab.url || tab.pendingUrl || '';
-    if (currentUrl !== 'about:blank') return;
+        const allTabs = await chrome.tabs.query({});
+        const hasQueueTab = allTabs.some(t => isQueueUrl(t.url || t.pendingUrl || ''));
 
-    // কোথাও queue/Tasks ট্যাব খোলা আছে কিনা দেখি
-    const allTabs = await chrome.tabs.query({});
-    const hasQueueTab = allTabs.some(t => isQueueUrl(t.url || t.pendingUrl || ''));
-
-    if (hasQueueTab) {
-        // queue আগে থেকেই খোলা → অপ্রয়োজনীয় blank ট্যাবটা বন্ধ করে দিই
-        chrome.tabs.remove(tabId).catch(() => {});
-        console.log('[MTurk Mgr] Closed about:blank (queue already open)');
-    } else {
-        // queue খোলা নেই → এই blank ট্যাবটাকেই Tasks queue বানিয়ে দিই
-        chrome.tabs.update(tabId, { url: TASKS_URL }).catch(() => {
-            // আপডেট না হলে fallback: নতুন Tasks ট্যাব খুলে blank-টা বন্ধ করি
-            chrome.tabs.create({ url: TASKS_URL });
+        if (hasQueueTab) {
             chrome.tabs.remove(tabId).catch(() => {});
-        });
-        console.log('[MTurk Mgr] No queue open → opened Tasks in the blank tab');
+            console.log('[MTurk Mgr] Closed about:blank (queue already open)');
+        } else {
+            chrome.tabs.update(tabId, { url: TASKS_URL }).catch(() => {
+                chrome.tabs.create({ url: TASKS_URL });
+                chrome.tabs.remove(tabId).catch(() => {});
+            });
+            console.log('[MTurk Mgr] No queue open → opened Tasks in the blank tab');
+        }
+    } catch (e) {
+        // ট্যাবটি চেক করার আগেই ইউজার ক্লোজ করে দিলে এরর যেন না আসে
     }
 }
 
-// নতুন ট্যাব about:blank হিসেবে জন্ম নিলে
 chrome.tabs.onCreated.addListener((tab) => {
     const url = tab.url || tab.pendingUrl || '';
     if (url === 'about:blank' && typeof tab.id === 'number') {
@@ -170,13 +193,11 @@ chrome.tabs.onCreated.addListener((tab) => {
     }
 });
 
-// কোনো ট্যাব about:blank-এ থিতু হলে, অথবা blank থেকে অন্য কোথাও গেলে
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (tab.url === 'about:blank' &&
         (changeInfo.status === 'complete' || changeInfo.url === 'about:blank')) {
         scheduleBlankCheck(tabId);
     } else if (changeInfo.url && changeInfo.url !== 'about:blank') {
-        // blank থেকে আসল পেজে চলে গেছে → পেন্ডিং বন্ধের কাজ বাতিল করি
         const pending = blankTabTimers.get(tabId);
         if (pending) {
             clearTimeout(pending);
@@ -185,4 +206,31 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
 });
 
-console.log('[MTurk Mgr] Background service worker started (offscreen audio, 3hr alarm, about:blank handler)');
+// ============ HTTP 503 ERROR RECOVERY (NETWORK LEVEL & LOOP CONTROL) ============
+const networkFilterUrls = ["https://worker.mturk.com/tasks*"];
+
+chrome.webRequest.onCompleted.addListener(
+    (details) => {
+        if ((details.statusCode === 503 || details.statusCode === 500) && details.type === 'main_frame' && details.tabId >= 0) {
+            console.log('[MTurk Mgr] 503/500 Error from Network! Retrying in 3 seconds...');
+            setTimeout(() => {
+                chrome.tabs.update(details.tabId, { url: details.url }).catch(() => {});
+            }, 3000); 
+        }
+    },
+    { urls: networkFilterUrls }
+);
+
+chrome.webRequest.onErrorOccurred.addListener(
+    (details) => {
+        if (details.type === 'main_frame' && details.tabId >= 0) {
+            console.log('[MTurk Mgr] Network Drop detected! Retrying in 3 seconds...');
+            setTimeout(() => {
+                chrome.tabs.update(details.tabId, { url: details.url }).catch(() => {});
+            }, 3000); 
+        }
+    },
+    { urls: networkFilterUrls }
+);
+
+console.log('[MTurk Mgr] Background service worker started (World-Class MVP Version)');

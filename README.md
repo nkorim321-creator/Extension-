@@ -8,7 +8,7 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## What it does
 
-1. **Duplicate tab detection** — when you open the same MTurk page in two tabs, a Bangla warning audio plays and the duplicate tab shows a red warning screen with a 10-second countdown, then auto-closes.
+1. **Duplicate tab detection** — when you open the same MTurk page in two tabs, the duplicate tab shows a red warning screen with a 10-second countdown, then auto-closes. The warning sound is **off by default** (it can be re-enabled — see "To customize").
 
 2. **Timer-based auto-redirect** — these tabs auto-redirect to `/tasks` after their timer expires:
    - Homepage (`/`) → 30 seconds
@@ -18,7 +18,9 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
    - `/projects` (list) → 30 seconds
    - `/status_details` → 60 seconds
 
-3. **Tasks page auto-refresh** — the `/tasks` queue hard-reloads every 10 minutes to keep it fresh.
+3. **Tasks page auto-refresh** — the `/tasks` queue does a plain reload (same URL, exactly like pressing the browser reload button) every **60 seconds**. Only the queue page reloads — an open HIT (`/projects/...`) is never reloaded, so accepted work is never lost.
+
+   **White/blank queue recovery** — sometimes MTurk serves the `/tasks` page but it renders as a blank white screen. The key insight (confirmed by the user): a **manual reload of the same page fixes it**, but navigating to a fresh cache-busting URL (`/tasks?_=<timestamp>`) just produces another white page. So the extension now recovers exactly the way a manual reload does: if the queue hasn't rendered ~6s after the page finishes loading (13s hard cap), it calls `window.location.reload()` on the same URL. If the page is *still* white after a few reloads (rare), it fetches the queue data from MTurk's JSON API (`/tasks?format=json`) and **draws the queue itself** — requester, title, reward, time remaining, and working **Work** buttons — using standard rows and `/projects/.../tasks/...` links so auto-work userscripts keep functioning on it.
 
 4. **Never closes the work tab** — `/tasks` and `/projects/...` (HIT pages) stay open and are never redirected.
 
@@ -49,12 +51,12 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## Verifying it works
 
-- Open MTurk in two tabs at the same URL → original tab plays the Bangla warning, duplicate tab shows the red warning and auto-closes after 10 seconds.
+- Open MTurk in two tabs at the same URL → the duplicate tab shows the red warning and auto-closes after 10 seconds (silent by default).
 - Open `https://worker.mturk.com/dashboard` → after 60 seconds, the tab closes automatically.
 
 ## Troubleshooting
 
-- **Audio doesn't play:** Open `chrome://settings/content/sound`, click "Add" under "Allowed to play sound", enter `https://worker.mturk.com`. This grants permanent autoplay permission.
+- **Want the warning sound back:** it is off by default. Set `SOUND_ENABLED = true` in **both** `background.js` and `content.js`. If it still doesn't play, open `chrome://settings/content/sound`, click "Add" under "Allowed to play sound", and enter `https://worker.mturk.com` to grant autoplay permission.
 - **Duplicate is not detected:** Make sure both tabs finished loading. The extension only fires after page load completes.
 - **Want to see what's happening:** Right-click the extension icon → Inspect popup, OR open `chrome://extensions/`, click "service worker" link under the extension to see background logs. Open DevTools (F12) on any MTurk page to see content script logs.
 
@@ -69,9 +71,11 @@ Userscripts run in a sandboxed environment and cannot close tabs the user opened
 
 ## To customize
 
+- **Turn the duplicate warning sound on/off:** set `SOUND_ENABLED` to `true` (on) or `false` (off) in **both** `background.js` and `content.js`. It is `false` (silent) by default.
 - **Change timer durations:** edit the `waitTime` values in `content.js` (in milliseconds: 30000 = 30 seconds)
 - **Change warning audio:** replace `mac-startup_7xOaB3X.mp3` with any other MP3 file (keep the same filename, or update the references in `content.js` and `offscreen.js`)
 - **Change duplicate countdown:** edit `autoCloseSeconds: 10` in `background.js`
+- **Change the queue reload interval:** edit `QUEUE_RELOAD_MS` in `content.js` (default 60000 = 60 seconds)
 - **Change the queue/Tasks URL** used by the `about:blank` handler: edit `TASKS_URL` in `background.js`
 - **Tune the `about:blank` grace period:** edit `BLANK_SETTLE_MS` in `background.js` (default 1500 ms)
 
