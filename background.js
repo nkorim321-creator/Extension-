@@ -107,7 +107,19 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                     return aOpened - bOpened;
                 });
 
+                const originalTab = matchingTabs[0];
                 const duplicateTabs = matchingTabs.slice(1);
+
+                // FORCE BACKGROUND: ডুপ্লিকেট ট্যাব যদি focus কেড়ে নিয়ে থাকে, তাহলে আসল
+                // queue ট্যাবে focus ফিরিয়ে দিই — ইউজারের কাজের ট্যাব নষ্ট হবে না, ডুপ্লিকেট
+                // ব্যাকগ্রাউন্ডেই warning দেখিয়ে নিজে বন্ধ হবে।
+                const stoleFocus = duplicateTabs.some(t => t.active);
+                if (stoleFocus && originalTab && typeof originalTab.id === 'number') {
+                    chrome.tabs.update(originalTab.id, { active: true }).catch(() => {});
+                    if (typeof originalTab.windowId === 'number') {
+                        chrome.windows.update(originalTab.windowId, { focused: true }).catch(() => {});
+                    }
+                }
 
                 if (SOUND_ENABLED) playAudioSecretly();
 

@@ -85,6 +85,10 @@
                     Close Now
                 </button>
             </div>
+            <!-- Hidden queue-markers: অন্য MTurk tool (NYT/MLDG userscript)-এর blank/white
+                 page detector যেন এই warning পেজটাকে "সাদা পেজ" ভেবে reload না করে দেয়।
+                 display:none হওয়ায় ইউজার দেখবে না, কিন্তু textContent/querySelector-এ ধরা পড়বে। -->
+            <div style="display:none" aria-hidden="true">Your HITs Queue Requester Title Reward Time Remaining Actions Browse all available HITs Worker ID Sign Out Dashboard Qualifications <a href="https://worker.mturk.com/tasks">mturk queue</a></div>
         `;
 
         // FIX: পেজ বডি রেডি না থাকলেও জোর করে ওয়ার্নিং দেখাবে, স্কিপ করবে না!
