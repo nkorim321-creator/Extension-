@@ -41,6 +41,31 @@ function isQueueUrl(url) {
     return typeof url === 'string' && url.startsWith(TASKS_URL);
 }
 
+// ============ DUPLICATE TAB AUTO-CLOSE (BACKGROUND-DRIVEN) ============
+// Chrome background (hidden) ট্যাবে content script-এর setInterval/timer throttle হয়, তাই
+// ওটার ভরসায় থাকলে duplicate ট্যাব click/focus না করা পর্যন্ত বন্ধ হয় না। তাই নির্দিষ্ট সময়
+// পর background service worker নিজেই duplicate /tasks ট্যাব বন্ধ করে দেয় — focus না করলেও বন্ধ হবে।
+const DUP_AUTO_CLOSE_SECONDS = 10;
+const pendingDupCloses = new Map(); // tabId -> timeoutId
+
+function scheduleDuplicateClose(tabId, delayMs) {
+    if (pendingDupCloses.has(tabId)) return; // ইতিমধ্যে শিডিউল করা আছে
+    const timer = setTimeout(async () => {
+        pendingDupCloses.delete(tabId);
+        try {
+            const t = await chrome.tabs.get(tabId);
+            if (!t || !isQueueUrl(t.url || t.pendingUrl || '')) return; // আর /tasks নেই / চলে গেছে
+            const all = await chrome.tabs.query({});
+            const queueTabs = all.filter(x => isQueueUrl(x.url || x.pendingUrl || ''));
+            if (queueTabs.length > 1) {           // এখনো duplicate আছে → বন্ধ করি
+                chrome.tabs.remove(tabId).catch(() => {});
+                console.log('[MTurk Mgr] Duplicate /tasks tab auto-closed from background');
+            }
+        } catch (e) {}
+    }, delayMs);
+    pendingDupCloses.set(tabId, timer);
+}
+
 // ============ 3-HOUR EARNINGS TAB ============
 chrome.runtime.onInstalled.addListener(() => {
     chrome.alarms.create('openEarningsTab', { periodInMinutes: 180 });
@@ -124,10 +149,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 if (SOUND_ENABLED) playAudioSecretly();
 
                 for (const dup of duplicateTabs) {
+                    // ১০s warning UI দেখাই (ট্যাবটা সামনে থাকলে ইউজার দেখবে)
                     chrome.tabs.sendMessage(dup.id, {
                         type: 'SHOW_DUPLICATE_WARNING',
-                        autoCloseSeconds: 10
+                        autoCloseSeconds: DUP_AUTO_CLOSE_SECONDS
                     }).catch(() => {});
+                    // আসল বন্ধটা background থেকে — background ট্যাব হলেও ১০s পর বন্ধ হবে
+                    scheduleDuplicateClose(dup.id, DUP_AUTO_CLOSE_SECONDS * 1000);
                 }
             }
         } catch (err) {
@@ -145,6 +173,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     if (pending) {
         clearTimeout(pending);
         blankTabTimers.delete(tabId);
+    }
+    const dupTimer = pendingDupCloses.get(tabId);
+    if (dupTimer) {
+        clearTimeout(dupTimer);
+        pendingDupCloses.delete(tabId);
     }
 });
 
